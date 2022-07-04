@@ -3,57 +3,29 @@ import math
 import torch
 import numpy as np
 import random
+from tqdm import tqdm
 
-sentiment2id = {'negative': 3, 'neutral': 4, 'positive': 5}
+# 0 - None
+# 1 - Aspect-Begin
+# 2 - Aspect-In
+# 3 - Opinion-Begin
+# 4 - Opinion-In
+ASPECT_BEGIN=1
+ASPECT_IN=2
+OPINION_BEGIN=3
+OPINION_IN=4
+PAIR=5
+sentiment2id = {'观点-负面': 5, '观点-中性':6, '观点-正面': 7}
 from transformers import AutoTokenizer
-
-
-def get_spans(tags):
-    '''for BIO tag'''
-    tags = tags.strip().split()
-    length = len(tags)
-    spans = []
-    start = -1
-    for i in range(length):
-        if tags[i].endswith('B'):
-            if start != -1:
-                spans.append([start, i - 1])
-            start = i
-        elif tags[i].endswith('O'):
-            if start != -1:
-                spans.append([start, i - 1])
-                start = -1
-    if start != -1:
-        spans.append([start, length - 1])
-    return spans
-
-
-def get_evaluate_spans(tags, length, token_range):
-    '''for BIO tag'''
-    spans = []
-    start = -1
-    for i in range(length):
-        l, r = token_range[i]
-        if tags[l] == -1:
-            continue
-        elif tags[l] == 1:
-            if start != -1:
-                spans.append([start, i - 1])
-            start = i
-        elif tags[l] == 0:
-            if start != -1:
-                spans.append([start, i - 1])
-                start = -1
-    if start != -1:
-        spans.append([start, length - 1])
-    return spans
-
 
 class Instance(object):
     def __init__(self, tokenizer, sentence_pack, args):
-        self.id = sentence_pack['id']
-        self.sentence = sentence_pack['sentence']
-        self.tokens = self.sentence.strip().split()
+        self.sentence = sentence_pack['text'].strip()
+        if args.do_lower_case:
+            self.sentence = self.sentence.lower()
+        # add a special token acount for opinion with no aspect
+        self.sentence = '## ' + self.sentence
+        self.tokens = self.sentence.split()
         self.sen_length = len(self.tokens)
         self.token_range = []
         if 'roberta' in args.bert_tokenizer_path:
@@ -61,9 +33,11 @@ class Instance(object):
         else:
             self.bert_tokens = tokenizer.encode(self.sentence)
         self.length = len(self.bert_tokens)
+        if self.length > args.max_sequence_len:
+            self.valid = False
+            return 
+        self.valid = True
         self.bert_tokens_padding = torch.zeros(args.max_sequence_len).long()
-        self.aspect_tags = torch.zeros(args.max_sequence_len).long()
-        self.opinion_tags = torch.zeros(args.max_sequence_len).long()
         self.tags = torch.zeros(args.max_sequence_len, args.max_sequence_len).long()
         self.mask = torch.zeros(args.max_sequence_len)
 
@@ -78,24 +52,36 @@ class Instance(object):
             token_start = token_end
         assert self.length == self.token_range[-1][-1]+2
 
-        self.aspect_tags[self.length:] = -1
-        self.aspect_tags[0] = -1
-        self.aspect_tags[self.length-1] = -1
-
-        self.opinion_tags[self.length:] = -1
-        self.opinion_tags[0] = -1
-        self.opinion_tags[self.length - 1] = -1
+        # self.length = min(self.length,args.max_sequence_len)
 
         self.tags[:, :] = -1
         for i in range(1, self.length-1):
             for j in range(i, self.length-1):
                 self.tags[i][j] = 0
 
-        for triple in sentence_pack['triples']:
-            aspect = triple['target_tags']
-            opinion = triple['opinion_tags']
-            aspect_span = get_spans(aspect)
-            opinion_span = get_spans(opinion)
+        def update_span(s):
+            s = [x+1 for x in s]
+            s[-1] -= 1
+            return s
+
+        for triple in sentence_pack['tags']:
+            # 过滤只包含中性情感的opinion
+            if 'aspect' not in triple and triple['sentiment'] == '观点-中性':
+                continue
+            if 'aspect' not in triple:
+                aspect_span = [[0,0]]
+            else:
+                aspect = triple['aspect']
+                if self.tokens[aspect[-1]] in '.!?;,':
+                    aspect = (aspect[0],aspect[1]-1)
+                aspect_span = [update_span(aspect)]
+            if 'opinion' not in triple:
+                continue
+            # 去除后面的标点符号
+            opinion = triple['opinion']
+            if self.tokens[opinion[-1]] in '.!?;,':
+                opinion = (opinion[0],opinion[1]-1)
+            opinion_span = [update_span(triple['opinion'])]
 
             '''set tag for aspect'''
             for l, r in aspect_span:
@@ -103,12 +89,10 @@ class Instance(object):
                 end = self.token_range[r][1]
                 for i in range(start, end+1):
                     for j in range(i, end+1):
-                        self.tags[i][j] = 1
+                        self.tags[i][j] = ASPECT_IN
+                self.tags[start][start] = ASPECT_BEGIN
                 for i in range(l, r+1):
-                    set_tag = 1 if i == l else 2
                     al, ar = self.token_range[i]
-                    self.aspect_tags[al] = set_tag
-                    self.aspect_tags[al+1:ar+1] = -1
                     '''mask positions of sub words'''
                     self.tags[al+1:ar+1, :] = -1
                     self.tags[:, al+1:ar+1] = -1
@@ -119,12 +103,10 @@ class Instance(object):
                 end = self.token_range[r][1]
                 for i in range(start, end+1):
                     for j in range(i, end+1):
-                        self.tags[i][j] = 2
+                        self.tags[i][j] = OPINION_IN
+                self.tags[start][start] = OPINION_BEGIN
                 for i in range(l, r+1):
-                    set_tag = 1 if i == l else 2
                     pl, pr = self.token_range[i]
-                    self.opinion_tags[pl] = set_tag
-                    self.opinion_tags[pl+1:pr+1] = -1
                     self.tags[pl+1:pr+1, :] = -1
                     self.tags[:, pl+1:pr+1] = -1
 
@@ -137,9 +119,9 @@ class Instance(object):
                             self.tags[sal:sar+1, spl:spr+1] = -1
                             if args.task == 'pair':
                                 if i > j:
-                                    self.tags[spl][sal] = 3
+                                    self.tags[spl][sal] = PAIR
                                 else:
-                                    self.tags[sal][spl] = 3
+                                    self.tags[sal][spl] = PAIR
                             elif args.task == 'triplet':
                                 if i > j:
                                     self.tags[spl][sal] = sentiment2id[triple['sentiment']]
@@ -153,8 +135,12 @@ def load_data_instances(sentence_packs, args):
         tokenizer = AutoTokenizer.from_pretrained(args.bert_tokenizer_path,add_prefix_space=True)
     else:
         tokenizer = AutoTokenizer.from_pretrained(args.bert_tokenizer_path)
-    for sentence_pack in sentence_packs:
-        instances.append(Instance(tokenizer, sentence_pack, args))
+    print('Raw data size',len(sentence_packs))
+    for sentence_pack in tqdm(sentence_packs):
+        instance = Instance(tokenizer, sentence_pack, args)
+        if instance.valid:
+            instances.append(instance)
+    print('Processed data size',len(instances))
     return instances
 
 
@@ -168,34 +154,26 @@ class DataIterator(object):
         random.shuffle(self.instances)
 
     def get_batch(self, index):
-        sentence_ids = []
         sentences = []
         sens_lens = []
         token_ranges = []
         bert_tokens = []
         lengths = []
         masks = []
-        aspect_tags = []
-        opinion_tags = []
         tags = []
 
         for i in range(index * self.args.batch_size,
                        min((index + 1) * self.args.batch_size, len(self.instances))):
-            sentence_ids.append(self.instances[i].id)
             sentences.append(self.instances[i].sentence)
             sens_lens.append(self.instances[i].sen_length)
             token_ranges.append(self.instances[i].token_range)
             bert_tokens.append(self.instances[i].bert_tokens_padding)
             lengths.append(self.instances[i].length)
             masks.append(self.instances[i].mask)
-            aspect_tags.append(self.instances[i].aspect_tags)
-            opinion_tags.append(self.instances[i].opinion_tags)
             tags.append(self.instances[i].tags)
 
         bert_tokens = torch.stack(bert_tokens).to(self.args.device)
         lengths = torch.tensor(lengths).to(self.args.device)
         masks = torch.stack(masks).to(self.args.device)
-        aspect_tags = torch.stack(aspect_tags).to(self.args.device)
-        opinion_tags = torch.stack(opinion_tags).to(self.args.device)
         tags = torch.stack(tags).to(self.args.device)
-        return sentence_ids, bert_tokens, lengths, masks, sens_lens, token_ranges, aspect_tags, tags
+        return bert_tokens, lengths, masks, sens_lens, token_ranges, tags
