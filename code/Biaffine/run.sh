@@ -1,6 +1,6 @@
 python main.py \
     --task=triplet \
-    --mode=test \
+    --mode=train \
     --dataset=shulex \
     --max_sequence_len=128 \
     --batch_size=64 \
@@ -8,6 +8,7 @@ python main.py \
     --early_stop=20 \
     --lr=5e-5 \
     --label_smoothing=0.05 \
+    --focal_loss=0.0 \
     --do_lower_case=True \
     --bert_model_path=/root/autodl-nas/pretrain-models/reviews-roberta \
     --bert_tokenizer_path=/root/autodl-nas/pretrain-models/roberta-base

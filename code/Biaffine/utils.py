@@ -118,6 +118,9 @@ class Metric():
                     print('wrong!!!!!!!!!!!!!!!!!!!!')
                     input()
                 triplets.append([al, ar, pl, pr, sentiment])
+        ops = set([(x[2],x[3]) for x in triplets if x[0]!=0])
+        triplets = [x for x in triplets if not (x[0]==0 and (x[2],x[3]) in ops)]
+        
         return triplets
 
     def score_aspect(self):
