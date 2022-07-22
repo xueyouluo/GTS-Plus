@@ -1,6 +1,6 @@
 python main.py \
     --task=triplet \
-    --mode=train \
+    --mode=test \
     --dataset=shulex \
     --max_sequence_len=128 \
     --batch_size=64 \

@@ -183,7 +183,7 @@ class Metric():
 
             predicted_aspect_spans = self.get_spans(self.predictions[i], self.sen_lengths[i], self.tokens_ranges[i], ASPECT)
             predicted_opinion_spans = self.get_spans(self.predictions[i], self.sen_lengths[i], self.tokens_ranges[i], OPINION)
-            # if i == 39:
+            # if i == 3:
             #     json.dump(self.predictions[i],open('./predict_tags.json','w'))
             #     json.dump(self.tokens_ranges[i],open('./predict_ranges.json','w'))
                 

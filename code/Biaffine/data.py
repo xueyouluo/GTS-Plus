@@ -140,6 +140,7 @@ def load_data_instances(sentence_packs, args):
         instance = Instance(tokenizer, sentence_pack, args)
         if instance.valid:
             instances.append(instance)
+    # print(tokenizer.convert_ids_to_tokens(instances[3].bert_tokens))
     print('Processed data size',len(instances))
     return instances
 
