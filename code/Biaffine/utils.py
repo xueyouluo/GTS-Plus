@@ -3,10 +3,55 @@ import pickle
 import numpy as np
 import sklearn
 import json
+import torch
 from data import ASPECT_BEGIN,ASPECT_IN,OPINION_BEGIN,OPINION_IN
 
 ASPECT=[ASPECT_BEGIN,ASPECT_IN]
 OPINION=[OPINION_BEGIN,OPINION_IN]
+
+# 对抗学习
+class FGM(object):
+    """Reference: https://arxiv.org/pdf/1605.07725.pdf"""
+    def __init__(self,
+                 model,
+                 emb_name='word_embeddings.',
+                 epsilon=1.0):
+        self.model = model
+        self.emb_name = emb_name
+        self.epsilon = epsilon
+        self.emb_backup = {}
+        self.grad_backup = {}
+
+    def attack(self):
+        """Add adversity."""
+        for name, param in self.model.named_parameters():
+            if param.requires_grad and self.emb_name in name:
+                self.emb_backup[name] = param.data.clone()
+                norm = torch.norm(param.grad)
+                if norm != 0 and not torch.isnan(norm):
+                    r_at = self.epsilon * param.grad / norm
+                    param.data.add_(r_at)
+
+    def restore(self):
+        """restore embedding"""
+        for name, param in self.model.named_parameters():
+            if param.requires_grad and self.emb_name in name:
+                assert name in self.emb_backup
+                param.data = self.emb_backup[name]
+        self.emb_backup = {}
+
+    def backup_grad(self):
+        for name, param in self.model.named_parameters():
+            if param.requires_grad and param.grad is not None:
+                self.grad_backup[name] = param.grad.clone()
+
+    def restore_grad(self):
+        for name, param in self.model.named_parameters():
+            if param.requires_grad and param.grad is not None:
+                if self.emb_name in name:
+                    param.grad = self.grad_backup[name]
+                else:
+                    param.grad += self.grad_backup[name]
 
 
 def get_aspects(tags, length, ignore_index=-1):

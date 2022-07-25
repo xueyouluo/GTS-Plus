@@ -14,6 +14,7 @@ from biaffine import BiaffineModel as MultiInferBert
 from transformers import AdamW,get_linear_schedule_with_warmup
 import utils
 from focal_loss import FocalLoss
+# from torch.optim.swa_utils import AveragedModel, SWALR
 
 # 设置随机种子，便于复现结果以及避免随机使得模型之间更加可比
 import random
@@ -38,17 +39,17 @@ def train(args):
         + [json.loads(x) for x in open(args.prefix + args.dataset + '/lamp_train.jsonl')] \
         + [json.loads(x) for x in open(args.prefix + args.dataset + '/pen_train.jsonl')] \
         + [json.loads(x) for x in open(args.prefix + args.dataset + '/starlink_train.jsonl')] \
-        + [json.loads(x) for x in open(args.prefix + args.dataset + '/battery_train_v2.jsonl')] \
+        + [json.loads(x) for x in open(args.prefix + args.dataset + '/battery_train.jsonl')] \
         + [json.loads(x) for x in open(args.prefix + args.dataset + '/connectivity_train.jsonl')] \
 
 
-    #[json.loads(x) for x in open(args.prefix + args.dataset + '/lap_rest_dev.jsonl')]#
     random.shuffle(train_sentence_packs)
     dev_sentence_packs = [json.loads(x) for x in open(args.prefix + args.dataset + '/absa_dev.jsonl')] \
+        + [json.loads(x) for x in open(args.prefix + args.dataset + '/lamp_dev.jsonl')] \
         + [json.loads(x) for x in open(args.prefix + args.dataset + '/charger_dev.jsonl')] \
-        + [json.loads(x) for x in open(args.prefix + args.dataset + '/battery_dev_v2.jsonl')] \
+        + [json.loads(x) for x in open(args.prefix + args.dataset + '/starlink_dev.jsonl')] \
 
-    test_sentence_packs = [json.loads(x) for x in open(args.prefix + args.dataset + '/battery_dev_v2.jsonl')]
+    test_sentence_packs = [json.loads(x) for x in open(args.prefix + args.dataset + '/pen_dev.jsonl')]
     instances_train = load_data_instances(train_sentence_packs, args)
     instances_dev = load_data_instances(dev_sentence_packs, args)
     instances_test = load_data_instances(test_sentence_packs, args)
@@ -93,30 +94,92 @@ def train(args):
     if args.focal_loss > 0:
         loss_fn = FocalLoss(gamma=args.focal_loss,ignore_index=-1)
     # model.load_state_dict(torch.load('./savemodel/tmp.bin'))
+    # swa_model = AveragedModel(model).to(args.device)
+    # swa_start = 5
+    # swa_scheduler = SWALR(optimizer, swa_lr=2e-6)
+    gradient_accumulation_steps = args.gradient_accumulation_steps
+    use_fgm = args.use_fgm
+    use_fp16 = args.use_fp16
+    if use_fgm:
+        fgm = utils.FGM(model,epsilon=args.fgm_epsilon)
+    
+    if use_fp16:
+        from torch.cuda import amp
+        scaler = amp.GradScaler()
+
     for i in range(args.epochs):
         if early_stop == 0:
             print('Early stopped!!')
             break
         print('Epoch:{}'.format(i))
         trainset.shuffle()
-        for j in trange(trainset.batch_count):
-            tokens, lengths, masks, sens_lens, token_ranges, tags = trainset.get_batch(j)
-            preds = model(tokens, masks)
+        for step in trange(trainset.batch_count):
+            tokens, lengths, masks, sens_lens, token_ranges, tags = trainset.get_batch(step)
 
-            preds_flatten = preds.reshape([-1, preds.shape[3]])
-            tags_flatten = tags.reshape([-1])
+            def get_loss(model, tokens, masks, tags):
+                preds = model(tokens, masks)
+                preds_flatten = preds.reshape([-1, preds.shape[3]])
+                tags_flatten = tags.reshape([-1])
 
-            if args.focal_loss > 0:
-                loss = loss_fn(preds_flatten, tags_flatten)
+                if args.focal_loss > 0:
+                    loss = loss_fn(preds_flatten, tags_flatten)
+                else:
+                    loss = F.cross_entropy(preds_flatten, tags_flatten, ignore_index=-1,label_smoothing=args.label_smoothing)
+                return loss
+
+            if args.use_fp16:
+                with amp.autocast():
+                    loss = get_loss(model, tokens, masks, tags)
             else:
-                loss = F.cross_entropy(preds_flatten, tags_flatten, ignore_index=-1,label_smoothing=args.label_smoothing)
+                loss = get_loss(model, tokens, masks, tags)
 
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            scheduler.step()
+            if gradient_accumulation_steps > 1:
+                loss /= gradient_accumulation_steps
 
-            if j == trainset.batch_count // 2 - 1:
+            # Backward pass
+            if use_fp16:
+                scaler.scale(loss).backward(retain_graph=True if use_fgm else False)
+            else:
+                loss.backward(retain_graph=True if use_fgm else False)
+
+            # 对抗训练
+            if use_fgm:
+                fgm.backup_grad()
+                fgm.attack()
+                model.zero_grad()
+                adv_loss = get_loss(model, tokens, masks, tags)
+                if gradient_accumulation_steps > 1:
+                    adv_loss /= gradient_accumulation_steps
+                if use_fp16:
+                    scaler.scale(adv_loss).backward()
+                else:
+                    adv_loss.backward()
+                fgm.restore_grad()
+                fgm.restore()
+
+            if (step+1)%gradient_accumulation_steps == 0:
+                if use_fp16:
+                    scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                # Update parameters and take a step using the computed gradient
+                if use_fp16:
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
+                scheduler.step()
+                model.zero_grad()
+
+            # optimizer.zero_grad()
+            # loss.backward()
+            # optimizer.step()
+            # # if i >= swa_start:
+            # #     swa_model.update_parameters(model)  # To update parameters of the averaged model.
+            # #     swa_scheduler.step()                # Switch to SWALR.
+            # # else:
+            # scheduler.step()
+
+            if step == trainset.batch_count // 2 - 1:
                 print('dev')
                 joint_precision, joint_recall, joint_f1 = eval(model, devset, args)
                 print('test')
@@ -150,6 +213,15 @@ def train(args):
             early_stop -= 1
             if early_stop == 0:
                 break
+
+    # Update bn statistics for the swa_model at the end
+    # torch.optim.swa_utils.update_bn(loader, swa_model)
+    # Use swa_model to make predictions on test data 
+    # joint_precision, joint_recall, joint_f1 = eval(swa_model, devset, args)
+    # if joint_f1 > best_joint_f1:
+    #     model_path = args.model_dir + 'bert' + '_' + args.dataset + '_' + args.task + '.bin'
+    #     torch.save(swa_model.state_dict(), model_path)
+
 
     print('best epoch: {}\tbest dev {} f1: {:.5f}\n\n'.format(best_joint_epoch, args.task, best_joint_f1))
 
@@ -202,15 +274,15 @@ def test(args):
     results = {}
 
 
-    # print('all')
-    # sentence_packs = [json.loads(x) for x in open(args.prefix + args.dataset + '/absa_dev.jsonl')] \
-    #     + [json.loads(x) for x in open(args.prefix + args.dataset + '/acdc_dev.jsonl')] \
-    #     + [json.loads(x) for x in open(args.prefix + args.dataset + '/charger_dev.jsonl')]
-    # instances = load_data_instances(sentence_packs, args)
-    # testset = DataIterator(instances, args)
-    # results['all'] = eval(model, testset, args)
+    print('all')
+    sentence_packs = [json.loads(x) for x in open(args.prefix + args.dataset + '/absa_dev.jsonl')] \
+        + [json.loads(x) for x in open(args.prefix + args.dataset + '/acdc_dev.jsonl')] \
+        + [json.loads(x) for x in open(args.prefix + args.dataset + '/charger_dev.jsonl')]
+    instances = load_data_instances(sentence_packs, args)
+    testset = DataIterator(instances, args)
+    results['all'] = eval(model, testset, args)
 
-    for name in ['battery']:#['absa','charger','acdc','headphone','lamp','pen','starlink','connectivity','battery']:
+    for name in ['absa','charger','acdc','headphone','lamp','pen','starlink','connectivity','battery']:
         print(name)
         sentence_packs = [json.loads(x) for x in open(args.prefix + args.dataset + f'/{name}_dev.jsonl')] 
         instances = load_data_instances(sentence_packs, args)
@@ -267,6 +339,14 @@ if __name__ == '__main__':
                         help='whether to use focal loss')  
     parser.add_argument('--label_smoothing', type=float, default=0.0,
                         help='whether to use label smoothing') 
+    parser.add_argument('--use_fgm', type=bool, default=False,
+                        help='FGM') 
+    parser.add_argument('--fgm_epsilon', type=float, default=1.0,
+                        help='fgm_epsilon') 
+    parser.add_argument('--use_fp16', type=bool, default=False,
+                        help='FP16')
+    parser.add_argument('--gradient_accumulation_steps', type=int, default=1,
+                        help='gradient_accumulation_steps')                    
     args = parser.parse_args()
 
     if args.task == 'triplet':

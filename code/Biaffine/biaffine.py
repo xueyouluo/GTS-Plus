@@ -72,6 +72,8 @@ class BiaffineModel(torch.nn.Module):
         bert_feature = self.dropout_output(bert_feature)
 
         start = self.start(bert_feature)
+        # start = self.dropout_output(start)
         end = self.end(bert_feature)
+        # end = self.dropout_output(end)
 
         return self.biaffine_forward(start,end,attention_mask)
