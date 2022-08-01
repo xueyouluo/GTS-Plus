@@ -30,26 +30,31 @@ def train(args):
 
     # load dataset
     #[json.loads(x) for x in open(args.prefix + args.dataset + '/lap_rest_train.jsonl')]#
-    train_sentence_packs = [json.loads(x) for x in open(args.prefix + args.dataset + '/lap_rest_dev.jsonl')] \
-        + [json.loads(x) for x in open(args.prefix + args.dataset + '/acdc_train.jsonl')] \
+    train_sentence_packs = \
+         [json.loads(x) for x in open(args.prefix + args.dataset + '/acdc_train.jsonl')] \
         + [json.loads(x) for x in open(args.prefix + args.dataset + '/absa_train.jsonl')] \
         + [json.loads(x) for x in open(args.prefix + args.dataset + '/charger_train.jsonl')] \
-        + [json.loads(x) for x in open(args.prefix + args.dataset + '/lap_rest_train.jsonl')] \
-        + [json.loads(x) for x in open(args.prefix + args.dataset + '/headphone_train.jsonl')] \
         + [json.loads(x) for x in open(args.prefix + args.dataset + '/lamp_train.jsonl')] \
         + [json.loads(x) for x in open(args.prefix + args.dataset + '/pen_train.jsonl')] \
         + [json.loads(x) for x in open(args.prefix + args.dataset + '/starlink_train.jsonl')] \
         + [json.loads(x) for x in open(args.prefix + args.dataset + '/battery_train.jsonl')] \
         + [json.loads(x) for x in open(args.prefix + args.dataset + '/connectivity_train.jsonl')] \
+        + [json.loads(x) for x in open(args.prefix + args.dataset + '/aoji_train.jsonl')] \
+        + [json.loads(x) for x in open(args.prefix + args.dataset + '/lanshen_train.jsonl')] \
+        + [json.loads(x) for x in open(args.prefix + args.dataset + '/headphone_train.jsonl')] \
+        # + [json.loads(x) for x in open(args.prefix + args.dataset + '/lap_rest_dev.jsonl')] \
+        # + [json.loads(x) for x in open(args.prefix + args.dataset + '/lap_rest_train.jsonl')] \
 
 
     random.shuffle(train_sentence_packs)
     dev_sentence_packs = [json.loads(x) for x in open(args.prefix + args.dataset + '/absa_dev.jsonl')] \
-        + [json.loads(x) for x in open(args.prefix + args.dataset + '/lamp_dev.jsonl')] \
+        + [json.loads(x) for x in open(args.prefix + args.dataset + '/headphone_dev.jsonl')] \
         + [json.loads(x) for x in open(args.prefix + args.dataset + '/charger_dev.jsonl')] \
-        + [json.loads(x) for x in open(args.prefix + args.dataset + '/starlink_dev.jsonl')] \
+        + [json.loads(x) for x in open(args.prefix + args.dataset + '/battery_dev.jsonl')] \
+        + [json.loads(x) for x in open(args.prefix + args.dataset + '/lanshen_train.jsonl')] \
 
-    test_sentence_packs = [json.loads(x) for x in open(args.prefix + args.dataset + '/pen_dev.jsonl')]
+
+    test_sentence_packs = [json.loads(x) for x in open(args.prefix + args.dataset + '/lanshen_dev.jsonl')]
     instances_train = load_data_instances(train_sentence_packs, args)
     instances_dev = load_data_instances(dev_sentence_packs, args)
     instances_test = load_data_instances(test_sentence_packs, args)
@@ -224,7 +229,7 @@ def train(args):
 
 
     print('best epoch: {}\tbest dev {} f1: {:.5f}\n\n'.format(best_joint_epoch, args.task, best_joint_f1))
-
+    test(args,model)
 
 def eval(model, dataset, args):
     model.eval()
@@ -259,15 +264,16 @@ def eval(model, dataset, args):
         print(args.task + '\tP:{:.5f}\tR:{:.5f}\tF1:{:.5f}\n'.format(precision, recall, f1))
 
     model.train()
-    return precision, recall, f1
+    return round(precision,2), round(recall,2), round(f1,2)
 
 
-def test(args):
+def test(args,model=None):
     print("Evaluation on testset:")
-    model_path = args.model_dir + 'bert' + '_' + args.dataset + '_' + args.task + '.bin'
-    model = MultiInferBert(args).to(args.device)
-    # model.load_state_dict(torch.load('./savemodel/triplet_v12.bin'))
-    model.load_state_dict(torch.load(model_path))
+    if model is None:
+        model_path = args.model_dir + 'bert' + '_' + args.dataset + '_' + args.task + '.bin'
+        model = MultiInferBert(args).to(args.device)
+        # model.load_state_dict(torch.load('./savemodel/triplet_v12.bin'))
+        model.load_state_dict(torch.load(model_path))
     # model = torch.load(model_path).to(args.device)
     model.eval()
 
@@ -282,7 +288,7 @@ def test(args):
     testset = DataIterator(instances, args)
     results['all'] = eval(model, testset, args)
 
-    for name in ['absa','charger','acdc','headphone','lamp','pen','starlink','connectivity','battery']:
+    for name in ['absa','charger','acdc','headphone','lamp','pen','starlink','connectivity','battery','aoji','lanshen']:
         print(name)
         sentence_packs = [json.loads(x) for x in open(args.prefix + args.dataset + f'/{name}_dev.jsonl')] 
         instances = load_data_instances(sentence_packs, args)
@@ -292,6 +298,10 @@ def test(args):
     for k in results:
         print(k,results[k])
 
+    p = sum([x[0] for x in results.values()])/len(results)
+    r = sum([x[1] for x in results.values()])/len(results)
+    f1 = sum([x[2] for x in results.values()])/len(results)
+    print('Macro',round(p,2),round(r,2),round(f1,2))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

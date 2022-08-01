@@ -6,7 +6,7 @@ python main.py \
     --batch_size=32 \
     --use_fgm=True \
     --use_fp16=True \
-    --epochs=10 \
+    --epochs=5 \
     --early_stop=20 \
     --lr=5e-5 \
     --label_smoothing=0.05 \
