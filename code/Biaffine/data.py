@@ -136,7 +136,12 @@ def load_data_instances(sentence_packs, args):
     else:
         tokenizer = AutoTokenizer.from_pretrained(args.bert_tokenizer_path)
     print('Raw data size',len(sentence_packs))
-    for sentence_pack in tqdm(sentence_packs):
+    texts = set()
+    for sentence_pack in (sentence_packs):
+        text = sentence_pack['text']
+        if text in texts:
+            continue
+        texts.add(text)
         instance = Instance(tokenizer, sentence_pack, args)
         if instance.valid:
             instances.append(instance)

@@ -21,4 +21,10 @@
 *.ipynb
 *.xlsx
 *.zip
+*.json
+*.jsonl
+**/MTL-ZhengAyong
+**/Biaffine-ZhengAyong
 .pytest_cache
+*.bin
+*.csv

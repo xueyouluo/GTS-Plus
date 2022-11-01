@@ -15,7 +15,7 @@ ASPECT_IN=2
 OPINION_BEGIN=3
 OPINION_IN=4
 PAIR=5
-sentiment2id = {'观点-负面': 5, '观点-中性':6, '观点-正面': 7}
+sentiment2id = {'观点-负面': 1, '观点-中性':2, '观点-正面': 3}
 from transformers import AutoTokenizer
 
 class Instance(object):
@@ -38,8 +38,7 @@ class Instance(object):
             return 
         self.valid = True
         self.bert_tokens_padding = torch.zeros(args.max_sequence_len).long()
-        self.aspect_tags = torch.zeros(args.max_sequence_len).long()
-        self.opinion_tags = torch.zeros(args.max_sequence_len).long()
+        self.ner_tags = -1 * torch.ones(args.max_sequence_len).long()
         self.tags = torch.zeros(args.max_sequence_len, args.max_sequence_len).long()
         self.mask = torch.zeros(args.max_sequence_len)
 
@@ -58,6 +57,7 @@ class Instance(object):
 
         self.tags[:, :] = -1
         for i in range(1, self.length-1):
+            self.ner_tags[i] = 0
             for j in range(i, self.length-1):
                 self.tags[i][j] = 0
 
@@ -88,29 +88,35 @@ class Instance(object):
             '''set tag for aspect'''
             for l, r in aspect_span:
                 start = self.token_range[l][0]
-                end = self.token_range[r][1]
-                for i in range(start, end+1):
-                    for j in range(i, end+1):
-                        self.tags[i][j] = ASPECT_IN
-                self.tags[start][start] = ASPECT_BEGIN
+                # end = self.token_range[r][1]
+                # for i in range(start, end+1):
+                #     for j in range(i, end+1):
+                #         self.tags[i][j] = ASPECT_IN
+                # self.tags[start][start] = ASPECT_BEGIN
                 for i in range(l, r+1):
                     al, ar = self.token_range[i]
-                    '''mask positions of sub words'''
-                    self.tags[al+1:ar+1, :] = -1
-                    self.tags[:, al+1:ar+1] = -1
+                    self.ner_tags[al] = ASPECT_IN
+                    self.ner_tags[al+1:ar+1] = -1
+                    # '''mask positions of sub words'''
+                    # self.tags[al+1:ar+1, :] = -1
+                    # self.tags[:, al+1:ar+1] = -1
+                self.ner_tags[start] = ASPECT_BEGIN
 
             '''set tag for opinion'''
             for l, r in opinion_span:
                 start = self.token_range[l][0]
-                end = self.token_range[r][1]
-                for i in range(start, end+1):
-                    for j in range(i, end+1):
-                        self.tags[i][j] = OPINION_IN
-                self.tags[start][start] = OPINION_BEGIN
+                # end = self.token_range[r][1]
+                # for i in range(start, end+1):
+                #     for j in range(i, end+1):
+                #         self.tags[i][j] = OPINION_IN
+                # self.tags[start][start] = OPINION_BEGIN
                 for i in range(l, r+1):
                     pl, pr = self.token_range[i]
-                    self.tags[pl+1:pr+1, :] = -1
-                    self.tags[:, pl+1:pr+1] = -1
+                    self.ner_tags[pl] = OPINION_IN
+                    self.ner_tags[pl+1:pr+1] = -1
+                    # self.tags[pl+1:pr+1, :] = -1
+                    # self.tags[:, pl+1:pr+1] = -1
+                self.ner_tags[start] = OPINION_BEGIN
 
             for al, ar in aspect_span:
                 for pl, pr in opinion_span:
@@ -138,10 +144,19 @@ def load_data_instances(sentence_packs, args):
     else:
         tokenizer = AutoTokenizer.from_pretrained(args.bert_tokenizer_path)
     print('Raw data size',len(sentence_packs))
+    texts = set()
+    dup = 0
     for sentence_pack in tqdm(sentence_packs):
+        text = sentence_pack['text']
+        if text in texts:
+            dup += 1
+            continue
+        texts.add(text)
         instance = Instance(tokenizer, sentence_pack, args)
         if instance.valid:
             instances.append(instance)
+    # print(tokenizer.convert_ids_to_tokens(instances[3].bert_tokens))
+    print('dup',dup)
     print('Processed data size',len(instances))
     return instances
 
@@ -163,6 +178,7 @@ class DataIterator(object):
         lengths = []
         masks = []
         tags = []
+        ner_tags = []
 
         for i in range(index * self.args.batch_size,
                        min((index + 1) * self.args.batch_size, len(self.instances))):
@@ -173,9 +189,11 @@ class DataIterator(object):
             lengths.append(self.instances[i].length)
             masks.append(self.instances[i].mask)
             tags.append(self.instances[i].tags)
+            ner_tags.append(self.instances[i].ner_tags)
 
         bert_tokens = torch.stack(bert_tokens).to(self.args.device)
         lengths = torch.tensor(lengths).to(self.args.device)
         masks = torch.stack(masks).to(self.args.device)
         tags = torch.stack(tags).to(self.args.device)
-        return bert_tokens, lengths, masks, sens_lens, token_ranges, tags
+        ner_tags = torch.stack(ner_tags).to(self.args.device)
+        return bert_tokens, lengths, masks, sens_lens, token_ranges, tags, ner_tags
